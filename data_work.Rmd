@@ -1,0 +1,116 @@
+---
+title: "data_work"
+output: html_document
+---
+
+# General first data pull 
+```{r}
+source("setup.R")
+
+# Download the meta-data for all sites
+meta_data <- snotel_info()
+
+# View the first few rows to understand the structure
+head(meta_data)
+
+id = 438 # Deadman Hill = 438
+# Download data for a specific site and return as a data frame
+df <- snotel_download(site_id = id, internal = TRUE)
+
+# View the first few rows of the downloaded data
+head(df)
+
+# make this column date objects
+df$date <- as.Date(df$date)
+
+# Make columns for day of water year and water year
+df <- df %>%
+  mutate(
+    water_year_start = if_else(month(date) >= 10,
+                               make_date(year(date), 10, 1),
+                               make_date(year(date) - 1, 10, 1)),
+    day_of_water_year = as.integer(date - water_year_start) + 1,
+    water_year = if_else(month(date) >= 10,
+                         year(date)+1,
+                         year(date),
+  )) %>%
+  select(-water_year_start)
+
+df %>% select(date, water_year, day_of_water_year) %>% head()
+
+# view new columns
+print(df$day_of_water_year)
+
+# View a water year
+library(ggplot2)
+df_subset <- df %>% filter(water_year == 2025) # filter df to one year
+ggplot(df_subset, aes(x = date)) +
+  geom_line(aes(y = snow_water_equivalent, color = "SWE")) +
+  geom_line(aes(y = precipitation_cumulative, color = "Precipitation")) +
+  labs(
+    title = "Snow Water Equivalent and Precipitation – Water Year 2025",
+    x = "Date",
+    y = "mm of water",
+    color = ""
+  ) +
+  theme_minimal()
+
+# Function to look at different time periods
+compare_mean_swe_by_wyday <- function(
+    df,
+    swe_col = snow_water_equivalent,
+    period1 = c(1980, 2000),
+    period2 = c(2001, 2025)
+) {
+  
+  df_proc <- df %>%
+    mutate(
+      period = case_when(
+        water_year >= period1[1] & water_year <= period1[2] ~
+          paste0(period1[1], "–", period1[2]),
+        water_year >= period2[1] & water_year <= period2[2] ~
+          paste0(period2[1], "–", period2[2]),
+        TRUE ~ NA_character_
+      )
+    ) %>%
+    filter(!is.na(period))
+  
+  swe_mean <- df_proc %>%
+    group_by(period, day_of_water_year) %>%
+    summarise(
+      mean_swe = mean({{ swe_col }}, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  ggplot(swe_mean, aes(x = day_of_water_year, y = mean_swe, color = period)) +
+    geom_line(linewidth = 1) +
+    labs(
+      title = "Mean Snow Water Equivalent by Day of Water Year",
+      x = "Day of Water Year",
+      y = "Mean Snow Water Equivalent",
+      color = "Period"
+    ) +
+    theme_minimal()
+}
+
+compare_mean_swe_by_wyday(df)
+compare_mean_swe_by_wyday(df, swe_col=precipitation_cumulative)
+```
+
+# Depth over years, starting in 2003-07-15 
+```{r}
+df %>%
+  ggplot(aes(x = date, y = snow_depth)) +
+  geom_line(linewidth = 1) +
+  scale_x_date(
+    limits = c(as.Date("2003-10-01"), NA)
+  ) +
+  theme_minimal()
+```
+
+# Computations for depth x SWE
+```{r}
+# getting a better estimate than Mizukami
+
+```
+
