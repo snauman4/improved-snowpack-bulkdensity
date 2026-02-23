@@ -4,7 +4,7 @@ output: html_document
 ---
 
 # General first data pull 
-```{r}
+```{r, include=FALSE}
 source("setup.R")
 
 # Download the meta-data for all sites
@@ -98,7 +98,7 @@ compare_mean_swe_by_wyday(df, swe_col=precipitation_cumulative)
 ```
 
 # Depth over years, starting in 2003-07-15 
-```{r}
+```{r, echo=FALSE}
 df %>%
   ggplot(aes(x = date, y = snow_depth)) +
   geom_line(linewidth = 1) +
@@ -110,7 +110,214 @@ df %>%
 
 # Computations for depth x SWE
 ```{r}
-# getting a better estimate than Mizukami
-
+# getting a better estimate than Mizukami (will just be comparison for what we do)
+# density(ps) = denswater(pw) (swe/depth)
+# take an average value of the densities over around 15 years (up until 2020)
+  # apply it to the last 5 years individually to evaluate how good that average is 
+# compare to the 164.7 kg/m^3
+df <- df %>%
+  mutate(
+    snow_density = case_when(
+      is.na(snow_depth) | is.na(snow_water_equivalent) ~ NA_real_,
+      snow_depth <= 0 ~ NA_real_,
+      TRUE ~ (snow_water_equivalent / snow_depth) * 1000  # kg/m^3
+    )
+  )
 ```
+
+# 15-year graph with trend
+```{r, echo=FALSE}
+# one fitted avg density line from Dec 1 - Mar 1, Mar 1 - Apr 30 ON TOP of the 15 years 
+# one fitted avg density line from Dec 1 - Mar 1, Mar 1 - Apr 30 ON TOP of the years
+# ----------------------------
+# 1) Keep full water year data (2005–2020)
+# ----------------------------
+df_0520 <- df %>%
+  filter(water_year >= 2005, water_year <= 2020) %>%
+  filter(!is.na(snow_density)) %>%
+  arrange(water_year, day_of_water_year)
+
+# ----------------------------
+# 2) Average density by day-of-water-year across years
+# ----------------------------
+avg_by_day <- df_0520 %>%
+  group_by(day_of_water_year) %>%
+  summarise(avg_density = mean(snow_density, na.rm = TRUE), .groups = "drop") %>%
+  arrange(day_of_water_year)
+
+# ----------------------------
+# 3) Define key day-of-water-year cut points (non-leap reference)
+# WY starts Oct 1 = day 1
+# Dec 1 = 62, Mar 1 = 152, Apr 30 = 212
+# ----------------------------
+dec1 <- 62
+mar1 <- 152
+apr30 <- 212
+
+# Fit datasets (only where you want the trend modeled)
+fit1_data <- avg_by_day %>% filter(day_of_water_year >= dec1, day_of_water_year <= mar1)
+fit2_data <- avg_by_day %>% filter(day_of_water_year >= mar1, day_of_water_year <= apr30)
+
+# Models
+fit1 <- lm(avg_density ~ day_of_water_year, data = fit1_data)
+fit2 <- lm(avg_density ~ day_of_water_year, data = fit2_data)
+
+# ----------------------------
+# 4) One continuous piecewise prediction (NO BREAKS)
+# ----------------------------
+pred_piecewise <- tibble(
+  day_of_water_year = seq(dec1, apr30)
+) %>%
+  mutate(
+    fit_density = if_else(
+      day_of_water_year <= mar1,
+      as.numeric(predict(fit1, newdata = .)),
+      as.numeric(predict(fit2, newdata = .))
+    )
+  ) %>%
+  filter(is.finite(fit_density))
+
+# ----------------------------
+# 5) Water-year month labels (Oct–Sep)
+# Use month-start day numbers for a non-leap WY
+# ----------------------------
+month_breaks <- c(
+  1,   # Oct 1
+  32,  # Nov 1
+  62,  # Dec 1
+  93,  # Jan 1
+  124, # Feb 1
+  152, # Mar 1
+  183, # Apr 1
+  213, # May 1
+  244, # Jun 1
+  274, # Jul 1
+  305, # Aug 1
+  336  # Sep 1
+)
+
+month_labels <- c("Oct","Nov","Dec","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep")
+
+# ----------------------------
+# 6) Plot
+# ----------------------------
+ggplot(df_0520,
+       aes(x = day_of_water_year, y = snow_density,
+           group = water_year, color = factor(water_year))) +
+
+  geom_line(alpha = 0.8) +
+
+  # Continuous fitted line (piecewise)
+  geom_line(data = pred_piecewise,
+            aes(x = day_of_water_year, y = fit_density, group = 1),
+            inherit.aes = FALSE,
+            linewidth = 1,
+            color = "black") +
+
+  scale_x_continuous(
+    breaks = month_breaks,
+    labels = month_labels,
+    limits = c(1, 365)
+  ) +
+
+  labs(
+    title = "Bulk Snowpack Density by Water Year (2005–2020)",
+    x = "Month (Water Year: Oct–Sep)",
+    y = "Bulk Snow Density (kg/m³)",
+    color = "Water Year"
+  ) +
+  theme_minimal()
+```
+
+# Density over the years, starting october 1
+```{r, echo=FALSE}
+# add a line for swe, density, and depth
+# compare each new year on top of the 15 year average
+# find a way to use fresh snow depth to change the average value to continue the sawtooth values even from the average
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+
+# ----------------------------
+# Constants (non-leap reference)
+# ----------------------------
+dec1  <- 62
+mar1  <- 152
+apr30 <- 212
+
+month_breaks <- c(1, 32, 62, 93, 124, 152, 183, 213, 244, 274, 305, 336)
+month_labels <- c("Oct","Nov","Dec","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep")
+
+# ----------------------------
+# 1) BASELINE: build 2005–2020 piecewise trend
+# ----------------------------
+df_base <- df %>%
+  filter(water_year >= 2005, water_year <= 2020) %>%
+  filter(!is.na(snow_density)) %>%
+  arrange(water_year, day_of_water_year)
+
+avg_by_day_base <- df_base %>%
+  group_by(day_of_water_year) %>%
+  summarise(avg_density = mean(snow_density, na.rm = TRUE), .groups = "drop") %>%
+  arrange(day_of_water_year)
+
+fit1_data <- avg_by_day_base %>%
+  filter(day_of_water_year >= dec1, day_of_water_year <= mar1)
+
+fit2_data <- avg_by_day_base %>%
+  filter(day_of_water_year >= mar1, day_of_water_year <= apr30)
+
+fit1 <- lm(avg_density ~ day_of_water_year, data = fit1_data)
+fit2 <- lm(avg_density ~ day_of_water_year, data = fit2_data)
+
+baseline_trend <- tibble(
+  day_of_water_year = seq(dec1, apr30)
+) %>%
+  mutate(
+    fit_density = if_else(
+      day_of_water_year <= mar1,
+      as.numeric(predict(fit1, newdata = .)),
+      as.numeric(predict(fit2, newdata = .))
+    )
+  ) %>%
+  filter(is.finite(fit_density))
+
+# ----------------------------
+# 2) TARGET YEARS: 2021–2025 lines
+# ----------------------------
+df_2125 <- df %>%
+  filter(water_year >= 2021, water_year <= 2025) %>%
+  filter(!is.na(snow_density)) %>%
+  arrange(water_year, day_of_water_year)
+
+# ----------------------------
+# 3) Plot 2021–2025 with 2005–2020 baseline trend overlaid
+# ----------------------------
+ggplot(df_2125,
+       aes(x = day_of_water_year, y = snow_density,
+           group = water_year, color = factor(water_year))) +
+
+  geom_line(alpha = 0.85) +
+
+  geom_line(data = baseline_trend,
+            aes(x = day_of_water_year, y = fit_density, group = 1),
+            inherit.aes = FALSE,
+            linewidth = 1,
+            color = "black") +
+
+  scale_x_continuous(
+    breaks = month_breaks,
+    labels = month_labels,
+    limits = c(1, 365)
+  ) +
+
+  labs(
+    title = "Bulk Snowpack Density (2021–2025) with 2005–2020 Baseline Trend",
+    x = "Month (Water Year: Oct–Sep)",
+    y = "Bulk Snow Density (kg/m³)",
+    color = "Water Year"
+  ) +
+  theme_minimal()
+```
+
 
