@@ -128,7 +128,7 @@ df <- df %>%
 # 15-year graph with trend
 ```{r, echo=FALSE}
 # one fitted avg density line from Dec 1 - Mar 1, Mar 1 - Apr 30 ON TOP of the 15 years 
-# one fitted avg density line from Dec 1 - Mar 1, Mar 1 - Apr 30 ON TOP of the years
+
 # ----------------------------
 # 1) Keep full water year data (2005–2020)
 # ----------------------------
@@ -178,30 +178,18 @@ pred_piecewise <- tibble(
   filter(is.finite(fit_density))
 
 # ----------------------------
-# 5) Water-year month labels (Oct–Sep)
-# Use month-start day numbers for a non-leap WY
+# 5) Month breaks/labels ONLY for Dec–Apr window
 # ----------------------------
-month_breaks <- c(
-  1,   # Oct 1
-  32,  # Nov 1
-  62,  # Dec 1
-  93,  # Jan 1
-  124, # Feb 1
-  152, # Mar 1
-  183, # Apr 1
-  213, # May 1
-  244, # Jun 1
-  274, # Jul 1
-  305, # Aug 1
-  336  # Sep 1
-)
-
-month_labels <- c("Oct","Nov","Dec","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep")
+month_breaks  <- c(62, 93, 124, 152, 183, 212)   # Dec 1, Jan 1, Feb 1, Mar 1, Apr 1, Apr 30
+month_labels  <- c("Dec","Jan","Feb","Mar","Apr","Apr 30")
 
 # ----------------------------
-# 6) Plot
+# 6) Plot (Dec 1–Apr 30 only)
 # ----------------------------
-ggplot(df_0520,
+df_0520_window <- df_0520 %>%
+  filter(day_of_water_year >= dec1, day_of_water_year <= apr30)
+
+ggplot(df_0520_window,
        aes(x = day_of_water_year, y = snow_density,
            group = water_year, color = factor(water_year))) +
 
@@ -217,23 +205,22 @@ ggplot(df_0520,
   scale_x_continuous(
     breaks = month_breaks,
     labels = month_labels,
-    limits = c(1, 365)
+    limits = c(dec1, apr30),
+    expand = c(0, 0)
   ) +
 
   labs(
-    title = "Bulk Snowpack Density by Water Year (2005–2020)",
-    x = "Month (Water Year: Oct–Sep)",
+    title = "Bulk Snowpack Density by Water Year (2005–2020) — Dec 1 to Apr 30",
+    x = "Month (Water Year)",
     y = "Bulk Snow Density (kg/m³)",
     color = "Water Year"
   ) +
   theme_minimal()
 ```
 
-# Density over the years, starting october 1
+# Density over the years, starting December 1
 ```{r, echo=FALSE}
 # add a line for swe, density, and depth
-# compare each new year on top of the 15 year average
-# find a way to use fresh snow depth to change the average value to continue the sawtooth values even from the average
 library(dplyr)
 library(lubridate)
 library(ggplot2)
@@ -245,11 +232,11 @@ dec1  <- 62
 mar1  <- 152
 apr30 <- 212
 
-month_breaks <- c(1, 32, 62, 93, 124, 152, 183, 213, 244, 274, 305, 336)
-month_labels <- c("Oct","Nov","Dec","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep")
+month_breaks <- c(62, 93, 124, 152, 183, 212)
+month_labels <- c("Dec","Jan","Feb","Mar","Apr","Apr 30")
 
 # ----------------------------
-# 1) BASELINE: build 2005–2020 piecewise trend
+# 1) BASELINE: build 2005–2020 piecewise trend (Dec 1–Apr 30)
 # ----------------------------
 df_base <- df %>%
   filter(water_year >= 2005, water_year <= 2020) %>%
@@ -283,12 +270,13 @@ baseline_trend <- tibble(
   filter(is.finite(fit_density))
 
 # ----------------------------
-# 2) TARGET YEARS: 2021–2025 lines
+# 2) TARGET YEARS: 2021–2025 lines (Dec 1–Apr 30 only)
 # ----------------------------
 df_2125 <- df %>%
   filter(water_year >= 2021, water_year <= 2025) %>%
   filter(!is.na(snow_density)) %>%
-  arrange(water_year, day_of_water_year)
+  arrange(water_year, day_of_water_year) %>%
+  filter(day_of_water_year >= dec1, day_of_water_year <= apr30)
 
 # ----------------------------
 # 3) Plot 2021–2025 with 2005–2020 baseline trend overlaid
@@ -308,16 +296,132 @@ ggplot(df_2125,
   scale_x_continuous(
     breaks = month_breaks,
     labels = month_labels,
-    limits = c(1, 365)
+    limits = c(dec1, apr30),
+    expand = c(0, 0)
   ) +
 
   labs(
-    title = "Bulk Snowpack Density (2021–2025) with 2005–2020 Baseline Trend",
-    x = "Month (Water Year: Oct–Sep)",
+    title = "Bulk Snowpack Density (2021–2025) with 2005–2020 Baseline Trend — Dec 1 to Apr 30",
+    x = "Month (Water Year)",
     y = "Bulk Snow Density (kg/m³)",
     color = "Water Year"
   ) +
   theme_minimal()
 ```
 
+# Change in Depth
+```{r, echo=FALSE}
+library(dplyr)
+library(ggplot2)
 
+# --- window ---
+dec1  <- 62
+apr30 <- 212
+
+month_breaks <- c(62, 93, 124, 152, 183) 
+month_labels <- c("Dec","Jan","Feb","Mar","Apr")
+
+# ----------------------------
+# 0) Choose an individual (recent) year
+# ----------------------------
+target_year <- 2024
+
+# ----------------------------
+# 1) Extract that year's data in the window
+# ----------------------------
+df_year <- df %>%
+  filter(water_year == target_year) %>%
+  arrange(day_of_water_year) %>%
+  filter(day_of_water_year >= dec1, day_of_water_year <= apr30)
+
+# ----------------------------
+# 2) Join baseline model to that year and compute residuals
+# ----------------------------
+df_year_model <- df_year %>%
+  left_join(baseline_trend, by = "day_of_water_year") %>%
+  mutate(
+    density_residual = snow_density - fit_density
+  )
+
+# ----------------------------
+# 3) Plot density vs model (individual year)
+# ----------------------------
+ggplot(df_year_model, aes(x = day_of_water_year)) +
+  geom_line(aes(y = snow_density), linewidth = 1) +
+  geom_line(aes(y = fit_density), linewidth = 1, linetype = "dashed") +
+  scale_x_continuous(
+    breaks = month_breaks,
+    labels = month_labels,
+    limits = c(dec1, apr30),
+    expand = c(0, 0)
+  ) +
+  labs(
+    title = paste0("Bulk Snowpack Density vs Baseline Model (WY ", target_year, ")"),
+    x = "Month (Dec–Apr)",
+    y = "Bulk Snow Density (kg/m³)"
+  ) +
+  theme_minimal()
+
+# ----------------------------
+# 4) Plot residuals around the model
+# ----------------------------
+ggplot(df_year_model, aes(x = day_of_water_year, y = density_residual)) +
+  geom_hline(yintercept = 0, linetype = "dotted") +
+  geom_line(linewidth = 1) +
+  scale_x_continuous(
+    breaks = month_breaks,
+    labels = month_labels,
+    limits = c(dec1, apr30),
+    expand = c(0, 0)
+  ) +
+  labs(
+    title = paste0("Density Residuals (Observed − Modeled) (WY ", target_year, ")"),
+    x = "Month (Dec–Apr)",
+    y = "Residual (kg/m³)"
+  ) +
+  theme_minimal()
+
+# ----------------------------
+# 5) Snow depth and change in snow depth (Δdepth)
+# ----------------------------
+# NOTE: change 'snow_depth' to your actual depth column name if needed.
+df_depth <- df_year %>%
+  filter(!is.na(snow_depth)) %>%
+  arrange(day_of_water_year) %>%
+  mutate(
+    delta_snow_depth = snow_depth - lag(snow_depth)
+  )
+
+# Snow depth
+ggplot(df_depth, aes(x = day_of_water_year, y = snow_depth)) +
+  geom_line(linewidth = 1) +
+  scale_x_continuous(
+    breaks = month_breaks,
+    labels = month_labels,
+    limits = c(dec1, apr30),
+    expand = c(0, 0)
+  ) +
+  labs(
+    title = paste0("Snow Depth (WY ", target_year, ")"),
+    x = "Month (Dec–Apr)",
+    y = "Snow Depth"
+  ) +
+  theme_minimal()
+
+# Daily change in snow depth
+ggplot(df_depth, aes(x = day_of_water_year, y = delta_snow_depth)) +
+  geom_hline(yintercept = 0, linetype = "dotted") +
+  geom_line(linewidth = 1) +
+  scale_x_continuous(
+    breaks = month_breaks,
+    labels = month_labels,
+    limits = c(dec1, apr30),
+    expand = c(0, 0)
+  ) +
+  labs(
+    title = paste0("Daily Change in Snow Depth (ΔDepth) (WY ", target_year, ")"),
+    x = "Month (Dec–Apr)",
+    y = "Δ Snow Depth (today − yesterday)"
+  ) +
+  theme_minimal()
+```
