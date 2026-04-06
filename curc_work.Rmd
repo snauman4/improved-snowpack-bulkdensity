@@ -1,0 +1,482 @@
+---
+title: "curc_work"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,      # Hide code
+  warning = FALSE,   # Suppress warnings
+  message = FALSE,   # Suppress messages
+  error = FALSE      # Suppress errors (optional, use TRUE to debug)
+)
+```
+
+# General first data pull 
+```{r, include=FALSE}
+source("setup.R")
+
+# Download the meta-data for all sites
+meta_data <- snotel_info()
+
+# View the first few rows to understand the structure
+head(meta_data)
+
+id = 438 # Deadman Hill = 438
+# Download data for a specific site and return as a data frame
+df <- snotel_download(site_id = id, internal = TRUE)
+
+# View the first few rows of the downloaded data
+head(df)
+
+# make this column date objects
+df$date <- as.Date(df$date)
+
+# Make columns for day of water year and water year
+df <- df %>%
+  mutate(
+    water_year_start = if_else(month(date) >= 10,
+                               make_date(year(date), 10, 1),
+                               make_date(year(date) - 1, 10, 1)),
+    day_of_water_year = as.integer(date - water_year_start) + 1,
+    water_year = if_else(month(date) >= 10,
+                         year(date)+1,
+                         year(date),
+  )) %>%
+  select(-water_year_start)
+
+df %>% select(date, water_year, day_of_water_year) %>% head()
+
+# view new columns
+print(df$day_of_water_year)
+```
+
+# Computations for depth x SWE
+```{r}
+# getting a better estimate than Mizukami (will just be comparison for what we do)
+# density(ps) = denswater(pw) (swe/depth)
+# take an average value of the densities over around 15 years (up until 2020)
+  # apply it to the last 5 years individually to evaluate how good that average is 
+# compare to the 164.7 kg/m^3
+df <- df %>%
+  mutate(
+    snow_density = case_when(
+      is.na(snow_depth) | is.na(snow_water_equivalent) ~ NA_real_,
+      snow_depth <= 0 ~ NA_real_,
+      TRUE ~ (snow_water_equivalent / snow_depth) * 1000  # kg/m^3
+    )
+  )
+```
+
+# 15-year graph with trend
+```{r, echo=FALSE}
+# one fitted avg density line from Dec 1 - Mar 1, Mar 1 - Apr 30 ON TOP of the 15 years 
+
+# ----------------------------
+# 1) Keep full water year data (2005–2020)
+# ----------------------------
+df_0520 <- df %>%
+  filter(water_year >= 2005, water_year <= 2020) %>%
+  filter(!is.na(snow_density)) %>%
+  arrange(water_year, day_of_water_year)
+
+# ----------------------------
+# 2) Average density by day-of-water-year across years
+# ----------------------------
+avg_by_day <- df_0520 %>%
+  group_by(day_of_water_year) %>%
+  summarise(avg_density = mean(snow_density, na.rm = TRUE), .groups = "drop") %>%
+  arrange(day_of_water_year)
+
+# ----------------------------
+# 3) Define key day-of-water-year cut points (non-leap reference)
+# WY starts Oct 1 = day 1
+# Dec 1 = 62, Mar 1 = 152, Apr 30 = 212
+# ----------------------------
+dec1 <- 62
+mar1 <- 152
+apr30 <- 212
+
+# Fit datasets (only where you want the trend modeled)
+fit1_data <- avg_by_day %>% filter(day_of_water_year >= dec1, day_of_water_year <= mar1)
+fit2_data <- avg_by_day %>% filter(day_of_water_year >= mar1, day_of_water_year <= apr30)
+
+# Models
+fit1 <- lm(avg_density ~ day_of_water_year, data = fit1_data)
+fit2 <- lm(avg_density ~ day_of_water_year, data = fit2_data)
+
+# ----------------------------
+# 4) One continuous piecewise prediction (NO BREAKS)
+# ----------------------------
+pred_piecewise <- tibble(
+  day_of_water_year = seq(dec1, apr30)
+) %>%
+  mutate(
+    fit_density = if_else(
+      day_of_water_year <= mar1,
+      as.numeric(predict(fit1, newdata = .)),
+      as.numeric(predict(fit2, newdata = .))
+    )
+  ) %>%
+  filter(is.finite(fit_density))
+
+# ----------------------------
+# 5) Month breaks/labels ONLY for Dec–Apr window
+# ----------------------------
+month_breaks  <- c(62, 93, 124, 152, 183, 212)   # Dec 1, Jan 1, Feb 1, Mar 1, Apr 1, Apr 30
+month_labels  <- c("Dec","Jan","Feb","Mar","Apr","Apr 30")
+
+# ----------------------------
+# 6) Plot (Dec 1–Apr 30 only)
+# ----------------------------
+df_0520_window <- df_0520 %>%
+  filter(day_of_water_year >= dec1, day_of_water_year <= apr30)
+
+ggplot(df_0520_window,
+       aes(x = day_of_water_year, y = snow_density,
+           group = water_year, color = factor(water_year))) +
+
+  geom_line(alpha = 0.8) +
+
+  # Continuous fitted line (piecewise)
+  geom_line(data = pred_piecewise,
+            aes(x = day_of_water_year, y = fit_density, group = 1),
+            inherit.aes = FALSE,
+            linewidth = 1,
+            color = "black") +
+
+  scale_x_continuous(
+    breaks = month_breaks,
+    labels = month_labels,
+    limits = c(dec1, apr30),
+    expand = c(0, 0)
+  ) +
+
+  labs(
+    title = "Bulk Snowpack Density by Water Year (2005–2020) — Dec 1 to Apr 30",
+    x = "Month (Water Year)",
+    y = "Bulk Snow Density (kg/m³)",
+    color = "Water Year"
+  ) +
+  theme_minimal()
+```
+
+### trends over the years (for poster) with the M-P fitted line
+```{r}
+# empirical density model from Dec 1 - Mar 1 and Mar 1 - Apr 30 ON TOP of the years 
+
+library(dplyr)
+library(ggplot2)
+library(tibble)
+
+# ----------------------------
+# 1) Keep full water year data (2005–2025)
+# ----------------------------
+df_0525 <- df %>%
+  filter(water_year >= 2005, water_year <= 2025) %>%
+  filter(!is.na(snow_density)) %>%
+  arrange(water_year, day_of_water_year)
+
+# ----------------------------
+# 2) Define key day-of-water-year cut points (non-leap reference)
+# WY starts Oct 1 = day 1
+# Dec 1 = 62, Mar 1 = 152, Apr 30 = 212
+# ----------------------------
+dec1 <- 62
+mar1 <- 152
+apr30 <- 212
+
+# ----------------------------
+# 3) Build piecewise empirical model
+# Dec 1–Mar 1:   density = 164.7 + 0.4 * t_WY
+# Mar 1–Apr 30:  density = -90.7 + 2.1 * t_WY
+# ----------------------------
+model_piecewise <- tibble(
+  day_of_water_year = seq(dec1, apr30)
+) %>%
+  mutate(
+    model_density = case_when(
+      day_of_water_year <= mar1 ~ 164.7 + 0.4 * day_of_water_year,
+      day_of_water_year >  mar1 ~ -90.7 + 2.1 * day_of_water_year
+    )
+  )
+
+# ----------------------------
+# 4) Month breaks/labels ONLY for Dec–Apr window
+# ----------------------------
+month_breaks <- c(62, 93, 124, 152, 183, 212)
+month_labels <- c("Dec","Jan","Feb","Mar","Apr","Apr 30")
+
+# ----------------------------
+# 5) Plot window and highlight years
+# ----------------------------
+df_0525_window <- df_0525 %>%
+  filter(day_of_water_year >= dec1, day_of_water_year <= apr30) %>%
+  mutate(
+    year_group = case_when(
+      water_year == 2011 ~ "2011",
+      water_year == 2012 ~ "2012",
+      TRUE ~ "Other"
+    )
+  )
+
+ggplot(df_0525_window,
+       aes(x = day_of_water_year, y = snow_density,
+           group = water_year, color = year_group)) +
+
+  geom_line(alpha = 0.8) +
+
+  # Piecewise empirical model
+  geom_line(data = model_piecewise,
+            aes(x = day_of_water_year, y = model_density, group = 1),
+            inherit.aes = FALSE,
+            linewidth = 1.2,
+            color = "red") +
+
+  scale_color_manual(
+    values = c(
+      "Other" = "grey75",
+      "2011" = "#2259E0",
+      "2012" = "#38E022"
+    ),
+    breaks = c("2011", "2012", "Other"),
+    labels = c("2011", "2012", "Other years:\n 2005-2010,\n 2013-2025")
+  ) +
+
+  scale_x_continuous(
+    breaks = month_breaks,
+    labels = month_labels,
+    limits = c(dec1, apr30),
+    expand = c(0, 0)
+  ) +
+
+  labs(
+    title = "Bulk Snowpack Density by Water Year (2005–2025) at Deadman Hill SNOTEL",
+    subtitle = "Two-part linear snowpack density equations (red line) derived from Mizukami and Perica (2008)",
+    x = "Month (Water Year)",
+    y = "Bulk Snow Density (kg/m³)",
+    color = "Water Year"
+  ) +
+  theme_minimal()
+```
+**Figure 1.** Seasonal evolution of bulk snowpack density at the Deadman Hill SNOTEL site for water years 2005–2025, restricted to December 1 through April 30. Water years 2011 and 2012 are highlighted for comparison, while all remaining years are shown in gray. The red line shows a piecewise empirical density model using 𝜌=164.7+0.4" " 𝑡_𝑊𝑌from December 1 to March 1 and 𝜌=−90.7+2.1" " 𝑡_𝑊𝑌from March 1 to April 30 (1). 
+
+# Daily SWE, depth, and density 
+```{r}
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(scales)
+
+# ----------------------------
+# Daily change variables
+# ----------------------------
+df_daily <- df %>%
+  arrange(water_year, date) %>%
+  group_by(water_year) %>%
+  mutate(
+    d_swe   = snow_water_equivalent - lag(snow_water_equivalent),
+    d_depth = snow_depth - lag(snow_depth),
+    d_dens  = snow_density - lag(snow_density)
+  ) %>%
+  ungroup()
+
+# ----------------------------
+# Keep WY 2011 and 2012, Dec 1–Apr 30
+# ----------------------------
+plot_1112 <- df_daily %>%
+  filter(water_year %in% c(2011, 2012),
+         day_of_water_year >= 62,
+         day_of_water_year <= 212)
+
+# ----------------------------
+# SWE and Depth plot
+# ----------------------------
+ggplot(plot_1112, aes(x = date)) +
+  geom_line(aes(y = snow_water_equivalent, color = "SWE"), linewidth = 0.9) +
+  geom_line(aes(y = snow_depth, color = "Depth"), linewidth = 0.9, linetype = "dashed") +
+  facet_wrap(~water_year, ncol = 1, scales = "free_x") +
+  labs(
+    title = "Daily SWE and Snow Depth, WY 2011 and 2012",
+    subtitle = "Comparing daily increases and decreases in SWE and depth",
+    x = "Date",
+    y = "Value (mm)",
+    color = ""
+  ) +
+  theme_minimal()
+
+
+### Density plot for the same years
+ggplot(plot_1112, aes(x = date, y = snow_density)) +
+  geom_line(linewidth = 0.9, color = "black") +
+  geom_hline(yintercept = 164.7, linetype = "dotted", color = "red") +
+  facet_wrap(~water_year, ncol = 1, scales = "free_x") +
+  labs(
+    title = "Daily Bulk Snow Density, WY 2011 and 2012",
+    subtitle = "Red dotted line = average fresh snow density (164.7 kg/m³)",
+    x = "Date",
+    y = "Bulk Snow Density (kg/m³)"
+  ) +
+  theme_minimal()
+```
+
+# Daily changes
+
+---
+
+## 2) Plot daily changes directly to see the pattern better
+
+This helps show the exact behavior you described:  
+**density decreases while depth increases**, then later **depth settles back down**.
+
+```{r}
+changes_1112 <- df_daily %>%
+  filter(water_year %in% c(2011, 2012),
+         day_of_water_year >= 62,
+         day_of_water_year <= 212)
+
+ggplot(changes_1112, aes(x = date)) +
+  geom_hline(yintercept = 0, color = "grey60") +
+  geom_col(aes(y = d_depth), fill = "skyblue3", alpha = 0.7) +
+  geom_line(aes(y = d_dens / 10), color = "darkred", linewidth = 0.9) +
+  facet_wrap(~water_year, ncol = 1, scales = "free_x") +
+  labs(
+    title = "Daily Change in Snow Depth with Density Change Overlay",
+    subtitle = "Bars = change in depth (mm); red line = change in density scaled by 10",
+    x = "Date",
+    y = "Daily change"
+  ) +
+  theme_minimal()
+```
+
+### How to read that plot
+- **Large positive depth bars** with a **drop in density** suggest **new, low-density snowfall**
+- After that, **depth may decline gradually** while **density rises**, which suggests **settling/compaction**
+- The reverse pattern is usually less consistent with fresh snowfall
+
+---
+
+## 3) Classify likely snowfall vs settling events
+
+Here is a practical way to do what you described.  
+We compare each day’s density to a **fresh snow reference density**.
+
+You already referenced **164.7 kg/m³**, so I use that as the baseline.
+```{r}
+fresh_snow_density <- 164.7
+
+df_events <- df_daily %>%
+  mutate(
+    density_dev_fresh = snow_density - fresh_snow_density,
+    event_type = case_when(
+      is.na(d_swe) | is.na(d_depth) | is.na(snow_density) ~ NA_character_,
+      
+      # likely new snowfall:
+      # SWE increases, depth increases, density is near or below fresh snow density
+      d_swe > 0 & d_depth > 0 & snow_density <= fresh_snow_density ~ "Likely new snowfall",
+      
+      # likely settling/compaction:
+      # SWE stable or small change, depth decreases, density increases
+      d_depth < 0 & d_dens > 0 ~ "Likely settling",
+      
+      # SWE increases but depth does not increase much = denser addition / rain-on-snow / mixed process
+      d_swe > 0 & d_depth <= 0 ~ "SWE gain without depth gain",
+      
+      TRUE ~ "Other / mixed"
+    )
+  )
+```
+
+
+---
+
+## 5) Scatterplot to distinguish snowfall vs settling
+
+- x = **change in depth**
+- y = **change in density**
+
+That gives:
+- **upper left / lower right** type structure depending on process
+- **fresh snowfall** should often be **depth up, density down**
+- **settling** should often be **depth down, density up**
+```{r}
+scatter_1112 <- df_events %>%
+  filter(water_year %in% c(2011, 2012),
+         day_of_water_year >= 62,
+         day_of_water_year <= 212,
+         !is.na(d_depth),
+         !is.na(d_dens))
+
+ggplot(scatter_1112, aes(x = d_depth, y = d_dens, color = event_type)) +
+  geom_hline(yintercept = 0, color = "grey60") +
+  geom_vline(xintercept = 0, color = "grey60") +
+  geom_point(alpha = 0.8) +
+  facet_wrap(~water_year) +
+  labs(
+    title = "Daily Change in Depth vs Daily Change in Density",
+    subtitle = "Fresh snowfall often appears as depth increase + density decrease; settling as depth decrease + density increase",
+    x = "Daily change in snow depth (mm)",
+    y = "Daily change in density (kg/m³)",
+    color = "Interpretation"
+  ) +
+  theme_minimal()
+```
+
+---
+
+## 6) Add precipitation to confirm snowfall days
+
+Your note about precipitation is important.  
+A simple logic is:
+
+- **Precip > 0**
+- **SWE increases**
+- **Depth increases or stays similar**
+- **Density decreases or stays near fresh snow density**
+
+That is strong evidence for **new snowfall**
+```{r}
+df_events <- df_events %>%
+   mutate(
+     event_type_precip = case_when(
+      precipitation > 0 & d_swe > 0 & d_depth >= 0 & d_dens <= 0 ~ "Likely snowfall",
+      precipitation == 0 & d_depth < 0 & d_dens > 0 ~ "Likely settling",
+       TRUE ~ "Other / mixed"
+    )
+   )
+```
+
+---
+
+## 7) A cleaner event-based filter for your exact hypothesis
+
+This isolates the pattern you described:
+
+> when density spikes down, depth spikes up, then comes down later at a different settling rate
+
+```{r}
+hypothesis_days <- df_events %>%
+  filter(water_year %in% c(2011, 2012),
+         day_of_water_year >= 62,
+         day_of_water_year <= 212) %>%
+  mutate(
+    spike_pattern = case_when(
+      d_dens < 0 & d_depth > 0 ~ "Density down, depth up",
+      d_dens > 0 & d_depth < 0 ~ "Settling signature",
+      TRUE ~ "Other"
+    )
+  )
+
+ggplot(hypothesis_days, aes(x = date, y = d_depth, fill = spike_pattern)) +
+  geom_col() +
+  facet_wrap(~water_year, ncol = 1, scales = "free_x") +
+  labs(
+    title = "Days Matching the Expected Snowfall/Settling Pattern",
+    subtitle = "Looking for density decreases paired with depth increases, followed by settling-type behavior",
+    x = "Date",
+    y = "Daily change in depth (mm)",
+    fill = ""
+  ) +
+  theme_minimal()
+```
+
+
