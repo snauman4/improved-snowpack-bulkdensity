@@ -65,6 +65,9 @@ df <- df %>%
       TRUE ~ (snow_water_equivalent / snow_depth) * 1000  # kg/m^3
     )
   )
+
+library(openxlsx)
+write.xlsx(df, "SNOTEL_deadman_hill.xlsx")
 ```
 
 # 15-year graph with trend
@@ -325,7 +328,6 @@ ggplot(plot_1112, aes(x = date, y = snow_density)) +
 
 ## 2) Plot daily changes directly to see the pattern better
 
-This helps show the exact behavior you described:  
 **density decreases while depth increases**, then later **depth settles back down**.
 
 ```{r}
@@ -357,10 +359,7 @@ ggplot(changes_1112, aes(x = date)) +
 
 ## 3) Classify likely snowfall vs settling events
 
-Here is a practical way to do what you described.  
-We compare each day’s density to a **fresh snow reference density**.
-
-You already referenced **164.7 kg/m³**, so I use that as the baseline.
+compare each day’s density to a **fresh snow reference density**.
 ```{r}
 fresh_snow_density <- 164.7
 
@@ -425,9 +424,6 @@ ggplot(scatter_1112, aes(x = d_depth, y = d_dens, color = event_type)) +
 
 ## 6) Add precipitation to confirm snowfall days
 
-Your note about precipitation is important.  
-A simple logic is:
-
 - **Precip > 0**
 - **SWE increases**
 - **Depth increases or stays similar**
@@ -447,9 +443,9 @@ df_events <- df_events %>%
 
 ---
 
-## 7) A cleaner event-based filter for your exact hypothesis
+## 7) A cleaner event-based filter
 
-This isolates the pattern you described:
+This isolates the pattern:
 
 > when density spikes down, depth spikes up, then comes down later at a different settling rate
 
@@ -479,4 +475,97 @@ ggplot(hypothesis_days, aes(x = date, y = d_depth, fill = spike_pattern)) +
   theme_minimal()
 ```
 
+---
 
+## Step-by-step: modeled density → modeled depth → daily changes → difference plot
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# ----------------------------
+# 1) Filter WY 2011 and 2012
+# ----------------------------
+df_1112 <- df %>%
+  filter(water_year %in% c(2011, 2012),
+         day_of_water_year >= 62,
+         day_of_water_year <= 212) %>%
+  arrange(water_year, date)
+
+# ----------------------------
+# 2) Mizukami & Perica modeled density
+# ----------------------------
+df_1112 <- df_1112 %>%
+  mutate(
+    density_model = case_when(
+      day_of_water_year <= 152 ~ 164.7 + 0.4 * day_of_water_year,
+      day_of_water_year > 152  ~ -90.7 + 2.1 * day_of_water_year
+    )
+  )
+
+# ----------------------------
+# 3) Modeled snow depth
+# SWE (mm) / density (kg/m³) → depth (mm)
+# depth = SWE / density * 1000
+# ----------------------------
+df_1112 <- df_1112 %>%
+  mutate(
+    depth_model = case_when(
+      is.na(snow_water_equivalent) | is.na(density_model) ~ NA_real_,
+      density_model <= 0 ~ NA_real_,
+      TRUE ~ (snow_water_equivalent / density_model) * 1000
+    )
+  )
+
+# ----------------------------
+# 4) Daily changes (observed + modeled)
+# ----------------------------
+df_1112 <- df_1112 %>%
+  group_by(water_year) %>%
+  mutate(
+    d_depth_obs   = snow_depth - lag(snow_depth),
+    d_depth_model = depth_model - lag(depth_model)
+  ) %>%
+  ungroup()
+
+# ----------------------------
+# 5) Difference in daily change
+# ----------------------------
+df_1112 <- df_1112 %>%
+  mutate(
+    d_depth_diff = d_depth_obs - d_depth_model
+  )
+
+# ----------------------------
+# 6) Plot: Daily Change in Snow Depth
+# ----------------------------
+ggplot(df_1112, aes(x = date)) +
+  geom_hline(yintercept = 0, color = "black") +
+
+  geom_line(aes(y = d_depth_obs, color = "Observed"), linewidth = 0.9) +
+  geom_line(aes(y = d_depth_model, color = "Modeled"), linewidth = 0.9) +
+
+  facet_wrap(~water_year, ncol = 1, scales = "free_x") +
+
+  labs(
+    title = "Daily Change in Snow Depth (Observed vs Modeled)",
+    subtitle = "Modeled depth derived from Mizukami & Perica density model",
+    x = "Date",
+    y = "Daily change in snow depth (mm)",
+    color = ""
+  ) +
+  theme_minimal()
+
+ggplot(df_1112, aes(x = date, y = d_depth_diff)) +
+  geom_hline(yintercept = 0, color = "black") +
+  geom_line(color = "purple", linewidth = 1) +
+
+  facet_wrap(~water_year, ncol = 1, scales = "free_x") +
+
+  labs(
+    title = "Difference in Daily Snow Depth Change",
+    subtitle = "Observed - Modeled",
+    x = "Date",
+    y = "Δ Depth Difference (mm)"
+  ) +
+  theme_minimal()
+```
